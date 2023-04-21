@@ -28,9 +28,9 @@ class FeaturePyramidNetwork(nn.Module):
 
     def __init__(self, in_channels_list, out_channels, extra_blocks=None):
         super(FeaturePyramidNetwork, self).__init__()
-        # 用来调整resnet特征矩阵(layer1,2,3,4)的channel（kernel_size=1）
+
         self.inner_blocks = nn.ModuleList()
-        # 对调整后的特征矩阵使用3x3的卷积核来得到对应的预测特征矩阵
+
         self.layer_blocks = nn.ModuleList()
         for in_channels in in_channels_list:
             if in_channels == 0:
@@ -96,12 +96,9 @@ class FeaturePyramidNetwork(nn.Module):
         names = list(x.keys())
         x = list(x.values())
 
-        # 将resnet layer4的channel调整到指定的out_channels
         # last_inner = self.inner_blocks[-1](x[-1])
         last_inner = self.get_result_from_inner_blocks(x[-1], -1)
-        # result中保存着每个预测特征层
         results = []
-        # 将layer4调整channel后的特征矩阵，通过3x3卷积后得到对应的预测特征矩阵
         # results.append(self.layer_blocks[-1](last_inner))
         results.append(self.get_result_from_layer_blocks(last_inner, -1))
 
@@ -112,7 +109,6 @@ class FeaturePyramidNetwork(nn.Module):
             last_inner = inner_lateral + inner_top_down
             results.insert(0, self.get_result_from_layer_blocks(last_inner, idx))
 
-        # 在layer4对应的预测特征层基础上生成预测特征矩阵5
         if self.extra_blocks is not None:
             results, names = self.extra_blocks(results, x, names)
 

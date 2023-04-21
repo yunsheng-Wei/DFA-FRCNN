@@ -9,8 +9,6 @@ from torchvision.ops.misc import FrozenBatchNorm2d
 from backbone import deform_conv_v2
 from .feature_pyramid_network import FeaturePyramidNetwork, LastLevelMaxPool
 
-
-
 def conv(in_planes, out_planes, kernel_size=3, stride=1, padding=1, dilation=1, groups=1):
     """standard convolution with padding"""
     return nn.Conv2d(in_planes, out_planes, kernel_size=kernel_size, stride=stride,
@@ -86,7 +84,6 @@ class EPSABlock(nn.Module):
 
     def forward(self, x):
         identity = x
-
         out = self.conv1(x)
         out = self.bn1(out)
         out = self.relu(out)
@@ -166,7 +163,7 @@ class EPSANet(nn.Module):
 
 
 
-#   添加deform_conv_v2结构
+#   deform_conv_v2
 class DeformConv2d(nn.Module):
     def __init__(self, inc, outc, kernel_size=3, padding=1, stride=1, bias=None, modulation=False):
         """
@@ -289,14 +286,11 @@ class DeformConv2d(nn.Module):
         c = x.size(1)
         # (b, c, h*w)
         x = x.contiguous().view(b, c, -1)
-
         # (b, h, w, N)
         index = q[..., :N]*padded_w + q[..., N:]  # offset_x*w + offset_y
         # (b, c, h*w*N)
         index = index.contiguous().unsqueeze(dim=1).expand(-1, c, -1, -1, -1).contiguous().view(b, c, -1)
-
         x_offset = x.gather(dim=-1, index=index).contiguous().view(b, c, h, w, N)
-
         return x_offset
 
     @staticmethod
@@ -309,8 +303,7 @@ class DeformConv2d(nn.Module):
 
 
 
-
-#   添加FPN结构
+# FPN
 #########################################################################################
 def overwrite_eps(model, eps):
     """
@@ -358,9 +351,6 @@ class IntermediateLayerGetter(nn.ModuleDict):
         orig_return_layers = return_layers
         return_layers = {str(k): str(v) for k, v in return_layers.items()}
         layers = OrderedDict()
-
-        # 遍历模型子模块按顺序存入有序字典
-        # 只保存layer4及其之前的结构，舍去之后不用的结构
         for name, module in model.named_children():
             layers[name] = module
             if name in return_layers:
@@ -373,8 +363,6 @@ class IntermediateLayerGetter(nn.ModuleDict):
 
     def forward(self, x):
         out = OrderedDict()
-        # 依次遍历模型的所有子模块，并进行正向传播，
-        # 收集layer1, layer2, layer3, layer4的输出
         for name, module in self.items():
             x = module(x)
             if name in self.return_layers:
@@ -384,25 +372,6 @@ class IntermediateLayerGetter(nn.ModuleDict):
 
 
 class BackboneWithFPN(nn.Module):
-    """
-    Adds a FPN on top of a model.
-    Internally, it uses torchvision.models._utils.IntermediateLayerGetter to
-    extract a submodel that returns the feature maps specified in return_layers.
-    The same limitations of IntermediatLayerGetter apply here.
-    Arguments:
-        backbone (nn.Module)
-        return_layers (Dict[name, new_name]): a dict containing the names
-            of the modules for which the activations will be returned as
-            the key of the dict, and the value of the dict is the name
-            of the returned activation (which the user can specify).
-        in_channels_list (List[int]): number of channels for each feature map
-            that is returned, in the order they are present in the OrderedDict
-        out_channels (int): number of channels in the FPN.
-        extra_blocks: ExtraFPNBlock
-    Attributes:
-        out_channels (int): the number of channels in the FPN
-    """
-
     def __init__(self, backbone, return_layers, in_channels_list, out_channels, extra_blocks=None):
         super(BackboneWithFPN, self).__init__()
 
@@ -423,75 +392,49 @@ class BackboneWithFPN(nn.Module):
         x = self.fpn(x)
         return x
 
-
 def epsanet50_fpn_backbone(pretrain_path="",
                           norm_layer=FrozenBatchNorm2d,  # FrozenBatchNorm2d的功能与BatchNorm2d类似，但参数无法更新
                           trainable_layers=3,
                           returned_layers=None,
                           extra_blocks=None):
-    """
-    搭建resnet50_fpn——backbone
-    Args:
-        pretrain_path: resnet50的预训练权重，如果不使用就默认为空
-        norm_layer: 官方默认的是FrozenBatchNorm2d，即不会更新参数的bn层(因为如果batch_size设置的很小会导致效果更差，还不如不用bn层)
-                    如果自己的GPU显存很大可以设置很大的batch_size，那么自己可以传入正常的BatchNorm2d层
-                    (https://github.com/facebookresearch/maskrcnn-benchmark/issues/267)
-        trainable_layers: 指定训练哪些层结构
-        returned_layers: 指定哪些层的输出需要返回
-        extra_blocks: 在输出的特征层基础上额外添加的层结构
 
-    Returns:
-
-    """
     epsanet_backbone = EPSANet(EPSABlock, [3, 4, 6, 3], num_classes=1000)
-
     if isinstance(norm_layer, FrozenBatchNorm2d):
         overwrite_eps(epsanet_backbone, 0.0)
-
     if pretrain_path != "":
         assert os.path.exists(pretrain_path), "{} is not exist.".format(pretrain_path)
-        # 载入预训练权重
         print(epsanet_backbone.load_state_dict(torch.load(pretrain_path), strict=False))
-
     # select layers that wont be frozen
     assert 0 <= trainable_layers <= 5
     layers_to_train = ['layer4', 'layer3', 'layer2', 'layer1', 'conv1'][:trainable_layers]
-
-    # 如果要训练所有层结构的话，不要忘了conv1后还有一个bn1
     if trainable_layers == 5:
         layers_to_train.append("bn1")
-
     # freeze layers
     for name, parameter in epsanet_backbone.named_parameters():
-        # 只训练不在layers_to_train列表中的层结构
         if all([not name.startswith(layer) for layer in layers_to_train]):
             parameter.requires_grad_(False)
-
     if extra_blocks is None:
         extra_blocks = LastLevelMaxPool()
-
     if returned_layers is None:
         returned_layers = [1, 2, 3, 4]
-    # 返回的特征层个数肯定大于0小于5
+
     assert min(returned_layers) > 0 and max(returned_layers) < 5
 
     # return_layers = {'layer1': '0', 'layer2': '1', 'layer3': '2', 'layer4': '3'}
     return_layers = {f'layer{k}': str(v) for v, k in enumerate(returned_layers)}
 
-    # in_channel 为layer4的输出特征矩阵channel = 2048
+    # in_channel = 2048
     in_channels_stage2 = epsanet_backbone.inplanes // 8  # 256
-    # 记录resnet50提供给fpn的每个特征层channel
     in_channels_list = [in_channels_stage2 * 2 ** (i - 1) for i in returned_layers]
-    # 通过fpn后得到的每个特征层的channel
     out_channels = 256
     return BackboneWithFPN(epsanet_backbone, return_layers, in_channels_list, out_channels, extra_blocks=extra_blocks)
 
 
-# def epsanet50():
-#     model = EPSANet(EPSABlock, [3, 4, 6, 3], num_classes=1000)
-#     return model
-#
-# def epsanet101():
-#     model = EPSANet(EPSABlock, [3, 4, 23, 3], num_classes=1000)
-#     return model
+def epsanet50():
+    model = EPSANet(EPSABlock, [3, 4, 6, 3], num_classes=1000)
+    return model
+
+def epsanet101():
+    model = EPSANet(EPSABlock, [3, 4, 23, 3], num_classes=1000)
+    return model
 

@@ -123,7 +123,6 @@ class MBConv(nn.Module):
         activation_layer = nn.SiLU  # alias Swish
         expanded_c = input_c * expand_ratio
 
-        # 在EfficientNetV2中，MBConv中不存在expansion=1的情况所以conv_pw肯定存在
         assert expand_ratio != 1
         # Point-wise expansion
         self.expand_conv = ConvBNAct(input_c,
@@ -148,11 +147,11 @@ class MBConv(nn.Module):
                                       out_planes=expanded_c,
                                       kernel_size=1,
                                       norm_layer=norm_layer,
-                                      activation_layer=nn.Identity)  # 注意这里没有激活函数，所有传入Identity
+                                      activation_layer=nn.Identity)
 
         self.out_channels = expanded_c
 
-        # 只有在使用shortcut连接时才使用dropout层
+
         self.drop_rate = drop_rate
         if self.has_shortcut and drop_rate > 0:
             self.dropout = DropPath(drop_rate)
@@ -194,7 +193,6 @@ class FusedMBConv(nn.Module):
         activation_layer = nn.SiLU  # alias Swish
         expanded_c = input_c * expand_ratio
 
-        # 只有当expand ratio不等于1时才有expand conv
         if self.has_expansion:
             # Expansion convolution
             self.expand_conv = ConvBNAct(input_c,
@@ -208,19 +206,19 @@ class FusedMBConv(nn.Module):
                                           out_c,
                                           kernel_size=1,
                                           norm_layer=norm_layer,
-                                          activation_layer=nn.Identity)  # 注意没有激活函数
+                                          activation_layer=nn.Identity)
         else:
-            # 当只有project_conv时的情况
+
             self.project_conv = ConvBNAct(input_c,
                                           expanded_c,
                                           kernel_size=kernel_size,
                                           stride=stride,
                                           norm_layer=norm_layer,
-                                          activation_layer=activation_layer)  # 注意有激活函数
+                                          activation_layer=activation_layer)
 
         self.out_channels = expanded_c
 
-        # 只有在使用shortcut连接时才使用dropout层
+
         self.drop_rate = drop_rate
         if self.has_shortcut and drop_rate > 0:
             self.dropout = DropPath(drop_rate)
@@ -281,7 +279,7 @@ class EfficientNetV2(nn.Module):
                               stem_filter_num,
                               kernel_size=3,
                               stride=2,
-                              norm_layer=norm_layer)  # 激活函数默认是SiLU
+                              norm_layer=norm_layer)
 
         total_blocks = sum([i[0] for i in model_cnf])
         block_id = 0
@@ -333,14 +331,14 @@ class EfficientNetV2(nn.Module):
         self.layer3 = nn.Sequential(*layer3)
         self.layer4 = nn.Sequential(*layer4)
         # self.blocks = nn.Sequential(*blocks)
-        self.in_channel = 1024   # 添加记录输出通道数
+        self.in_channel = 1024
         head_input_c = model_cnf[-1][-3]
         head = OrderedDict()
 
         head.update({"project_conv": ConvBNAct(head_input_c,
                                                num_features,
                                                kernel_size=1,
-                                               norm_layer=norm_layer)})  # 激活函数默认是SiLU
+                                               norm_layer=norm_layer)})
 
         head.update({"avgpool": nn.AdaptiveAvgPool2d(1)})
         head.update({"flatten": nn.Flatten()})
@@ -374,11 +372,6 @@ class EfficientNetV2(nn.Module):
         # x = self.head(x)
 
         return x
-
-
-# ###############################################
-# #                 添加FPN结构                  #
-# ###############################################
 
 def overwrite_eps(model, eps):
     """
@@ -427,8 +420,6 @@ class IntermediateLayerGetter(nn.ModuleDict):
         return_layers = {str(k): str(v) for k, v in return_layers.items()}
         layers = OrderedDict()
 
-        # 遍历模型子模块按顺序存入有序字典
-        # 只保存layer4及其之前的结构，舍去之后不用的结构
         for name, module in model.named_children():
             layers[name] = module
             if name in return_layers:
@@ -441,8 +432,6 @@ class IntermediateLayerGetter(nn.ModuleDict):
 
     def forward(self, x):
         out = OrderedDict()
-        # 依次遍历模型的所有子模块，并进行正向传播，
-        # 收集layer1, layer2, layer3, layer4的输出
         for name, module in self.items():
             x = module(x)
             if name in self.return_layers:
@@ -492,33 +481,20 @@ class BackboneWithFPN(nn.Module):
 
 
 def effv2_fpn_backbone(pretrain_path="",
-                          norm_layer=FrozenBatchNorm2d,  # FrozenBatchNorm2d的功能与BatchNorm2d类似，但参数无法更新
+                          norm_layer=FrozenBatchNorm2d,
                           trainable_layers=4,
                           returned_layers=None,
                           extra_blocks=None):
-    """
-    搭建resnet50_fpn——backbone
-    Args:
-        pretrain_path: resnet50的预训练权重，如果不使用就默认为空
-        norm_layer: 官方默认的是FrozenBatchNorm2d，即不会更新参数的bn层(因为如果batch_size设置的很小会导致效果更差，还不如不用bn层)
-                    如果自己的GPU显存很大可以设置很大的batch_size，那么自己可以传入正常的BatchNorm2d层
-                    (https://github.com/facebookresearch/maskrcnn-benchmark/issues/267)
-        trainable_layers: 指定训练哪些层结构
-        returned_layers: 指定哪些层的输出需要返回
-        extra_blocks: 在输出的特征层基础上额外添加的层结构
 
-    Returns:
-
-    """
     effv2_backbone = EfficientNetV2()
     model_weights = effv2_backbone.state_dict()
     weights_dict = torch.load("./weights/pre_efficientnetv2-s.pth")
-    keys_list = weights_dict.keys()  # 所有的key，组成一个list
+    keys_list = weights_dict.keys()
 
-    keys_list_contain_digit = [each for each in keys_list if each.split(".")[1].isdigit()]  # 包含数字的
-    keys_list_not_contain_digit = [each for each in keys_list if not each.split(".")[1].isdigit()]  # 第二个不包含数字的
+    keys_list_contain_digit = [each for each in keys_list if each.split(".")[1].isdigit()]
+    keys_list_not_contain_digit = [each for each in keys_list if not each.split(".")[1].isdigit()]
 
-    #  对有数字的进行排序
+
     keys_list_contain_digit = sorted(keys_list_contain_digit, key=lambda x: int(x.split(".")[1]))
 
     keys_list = keys_list_contain_digit
@@ -549,22 +525,12 @@ def effv2_fpn_backbone(pretrain_path="",
     if isinstance(norm_layer, FrozenBatchNorm2d):
         overwrite_eps(effv2_backbone, 0.0)
 
-    # if pretrain_path != "":
-    #     assert os.path.exists(pretrain_path), "{} is not exist.".format(pretrain_path)
-    #     # 载入预训练权重
-    #     print(effv2_backbone.load_state_dict(torch.load(pretrain_path), strict=False))
-
-    # select layers that wont be frozen
     assert 0 <= trainable_layers <= 5
     layers_to_train = ['layer4', 'layer3', 'layer2', 'layer1']
 
-    # 如果要训练所有层结构的话，不要忘了conv1后还有一个bn1
-    # if trainable_layers == 5:
-    #     layers_to_train.append("bn1")
-
     # freeze layers
     for name, parameter in effv2_backbone.named_parameters():
-        # 只训练在layers_to_train列表中的层结构
+
         if all([not name.startswith(layer) for layer in layers_to_train]):
             parameter.requires_grad_(False)
 
@@ -573,86 +539,78 @@ def effv2_fpn_backbone(pretrain_path="",
 
     if returned_layers is None:
         returned_layers = [1, 2, 3, 4]
-    # 返回的特征层个数肯定大于0小于5
     assert min(returned_layers) > 0 and max(returned_layers) < 5
 
     # return_layers = {'layer1': '0', 'layer2': '1', 'layer3': '2', 'layer4': '3'}
     return_layers = {f'layer{k}': str(v) for v, k in enumerate(returned_layers)}
 
-    # in_channel 为layer4的输出特征矩阵channel = 2048
     in_channels_stage2 = effv2_backbone.in_channel // 4   # 256
-    # 记录resnet50提供给fpn的每个特征层channel
+
     in_channels_list = [64, 160, 256, 256]   # [256, 512, 1024, 2048]  [64, 160, 256, 256]
-    # 通过fpn后得到的每个特征层的channel
+
     out_channels = 256
     return BackboneWithFPN(effv2_backbone, return_layers, in_channels_list, out_channels, extra_blocks=extra_blocks)
 
+def efficientnetv2_s(num_classes: int = 1000):
+    """
+    EfficientNetV2
+    https://arxiv.org/abs/2104.00298
+    """
+    # train_size: 300, eval_size: 384
 
-
-
-
-
-
-# def efficientnetv2_s(num_classes: int = 1000):
-#     """
-#     EfficientNetV2
-#     https://arxiv.org/abs/2104.00298
-#     """
-#     # train_size: 300, eval_size: 384
+    # repeat, kernel, stride, expansion, in_c, out_c, operator, se_ratio
+    model_config = [[2, 3, 1, 1, 24, 24, 0, 0],
+                    [4, 3, 2, 4, 24, 48, 0, 0],
+                    [4, 3, 2, 4, 48, 64, 0, 0],
+                    [6, 3, 2, 4, 64, 128, 1, 0.25],
+                    [9, 3, 1, 6, 128, 160, 1, 0.25],
+                    [15, 3, 2, 6, 160, 256, 1, 0.25]]
 #
-#     # repeat, kernel, stride, expansion, in_c, out_c, operator, se_ratio
-#     model_config = [[2, 3, 1, 1, 24, 24, 0, 0],
-#                     [4, 3, 2, 4, 24, 48, 0, 0],
-#                     [4, 3, 2, 4, 48, 64, 0, 0],
-#                     [6, 3, 2, 4, 64, 128, 1, 0.25],
-#                     [9, 3, 1, 6, 128, 160, 1, 0.25],
-#                     [15, 3, 2, 6, 160, 256, 1, 0.25]]
-# #
-#     model = EfficientNetV2(model_cnf=model_config,
-#                            num_classes=num_classes,
-#                            dropout_rate=0.2)
-#     return model
+    model = EfficientNetV2(model_cnf=model_config,
+                           num_classes=num_classes,
+                           dropout_rate=0.2)
+    return model
 
 
-# def efficientnetv2_m(num_classes: int = 1000):
-#     """
-#     EfficientNetV2
-#     https://arxiv.org/abs/2104.00298
-#     """
-#     # train_size: 384, eval_size: 480
-#
-#     # repeat, kernel, stride, expansion, in_c, out_c, operator, se_ratio
-#     model_config = [[3, 3, 1, 1, 24, 24, 0, 0],
-#                     [5, 3, 2, 4, 24, 48, 0, 0],
-#                     [5, 3, 2, 4, 48, 80, 0, 0],
-#                     [7, 3, 2, 4, 80, 160, 1, 0.25],
-#                     [14, 3, 1, 6, 160, 176, 1, 0.25],
-#                     [18, 3, 2, 6, 176, 304, 1, 0.25],
-#                     [5, 3, 1, 6, 304, 512, 1, 0.25]]
-#
-#     model = EfficientNetV2(model_cnf=model_config,
-#                            num_classes=num_classes,
-#                            dropout_rate=0.3)
-#     return model
-#
-#
-# def efficientnetv2_l(num_classes: int = 1000):
-#     """
-#     EfficientNetV2
-#     https://arxiv.org/abs/2104.00298
-#     """
-#     # train_size: 384, eval_size: 480
-#
-#     # repeat, kernel, stride, expansion, in_c, out_c, operator, se_ratio
-#     model_config = [[4, 3, 1, 1, 32, 32, 0, 0],
-#                     [7, 3, 2, 4, 32, 64, 0, 0],
-#                     [7, 3, 2, 4, 64, 96, 0, 0],
-#                     [10, 3, 2, 4, 96, 192, 1, 0.25],
-#                     [19, 3, 1, 6, 192, 224, 1, 0.25],
-#                     [25, 3, 2, 6, 224, 384, 1, 0.25],
-#                     [7, 3, 1, 6, 384, 640, 1, 0.25]]
-#
-#     model = EfficientNetV2(model_cnf=model_config,
-#                            num_classes=num_classes,
-#                            dropout_rate=0.4)
-#     return model
+def efficientnetv2_m(num_classes: int = 1000):
+    """
+    EfficientNetV2
+    https://arxiv.org/abs/2104.00298
+    """
+    # train_size: 384, eval_size: 480
+
+    # repeat, kernel, stride, expansion, in_c, out_c, operator, se_ratio
+    model_config = [[3, 3, 1, 1, 24, 24, 0, 0],
+                    [5, 3, 2, 4, 24, 48, 0, 0],
+                    [5, 3, 2, 4, 48, 80, 0, 0],
+                    [7, 3, 2, 4, 80, 160, 1, 0.25],
+                    [14, 3, 1, 6, 160, 176, 1, 0.25],
+                    [18, 3, 2, 6, 176, 304, 1, 0.25],
+                    [5, 3, 1, 6, 304, 512, 1, 0.25]]
+
+    model = EfficientNetV2(model_cnf=model_config,
+                           num_classes=num_classes,
+                           dropout_rate=0.3)
+    return model
+
+
+def efficientnetv2_l(num_classes: int = 1000):
+    """
+    EfficientNetV2
+    https://arxiv.org/abs/2104.00298
+    """
+    # train_size: 384, eval_size: 480
+
+    # repeat, kernel, stride, expansion, in_c, out_c, operator, se_ratio
+    model_config = [[4, 3, 1, 1, 32, 32, 0, 0],
+                    [7, 3, 2, 4, 32, 64, 0, 0],
+                    [7, 3, 2, 4, 64, 96, 0, 0],
+                    [10, 3, 2, 4, 96, 192, 1, 0.25],
+                    [19, 3, 1, 6, 192, 224, 1, 0.25],
+                    [25, 3, 2, 6, 224, 384, 1, 0.25],
+                    [7, 3, 1, 6, 384, 640, 1, 0.25]]
+
+    model = EfficientNetV2(model_cnf=model_config,
+                           num_classes=num_classes,
+                           dropout_rate=0.4)
+    return model
