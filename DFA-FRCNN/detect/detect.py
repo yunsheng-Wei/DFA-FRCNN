@@ -1,7 +1,6 @@
 import os
 import time
 import json
-
 import torch
 from PIL import Image
 import matplotlib.pyplot as plt
@@ -13,40 +12,16 @@ from utils.draw_box_utils import draw_box
 
 
 def create_model(num_classes):
-    # mobileNetv2+faster_RCNN
-    # backbone = MobileNetV2().features
-    # backbone.out_channels = 1280
-    #
-    # anchor_generator = AnchorsGenerator(sizes=((32, 64, 128, 256, 512),),
-    #                                     aspect_ratios=((0.5, 1.0, 2.0),))
-    #
-    # roi_pooler = torchvision.ops.MultiScaleRoIAlign(featmap_names=['0'],
-    #                                                 output_size=[7, 7],
-    #                                                 sampling_ratio=2)
-    #
-    # model = FasterRCNN(backbone=backbone,
-    #                    num_classes=num_classes,
-    #                    rpn_anchor_generator=anchor_generator,
-    #                    box_roi_pool=roi_pooler)
-
-    # resNet50+fpn+faster_RCNN
-    # 注意，这里的norm_layer要和训练脚本中保持一致
     backbone = resnet50_fpn_backbone(norm_layer=torch.nn.BatchNorm2d)
     model = FasterRCNN(backbone=backbone, num_classes=num_classes, rpn_score_thresh=0.5)
-
     return model
-
-
 def time_synchronized():
     torch.cuda.synchronize() if torch.cuda.is_available() else None
     return time.time()
-
-
 def main():
     # get devices
     device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
     print("using {} device.".format(device))
-
     # create model
     model = create_model(num_classes=21)
 
