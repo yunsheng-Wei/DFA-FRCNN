@@ -1,7 +1,7 @@
 # Model validation metrics
 
 from pathlib import Path
-
+import math
 import matplotlib.pyplot as plt
 import numpy as np
 import torch
@@ -14,21 +14,7 @@ def fitness(x):
     w = [0.0, 0.0, 0.1, 0.9]  # weights for [P, R, mAP@0.5, mAP@0.5:0.95]
     return (x[:, :4] * w).sum(1)
 
-
 def ap_per_class(tp, conf, pred_cls, target_cls, plot=False, save_dir='.', names=()):
-    """ Compute the average precision, given the recall and precision curves.
-    Source: https://github.com/rafaelpadilla/Object-Detection-Metrics.
-    # Arguments
-        tp:  True positives (nparray, nx1 or nx10).
-        conf:  Objectness value from 0-1 (nparray).
-        pred_cls:  Predicted object classes (nparray).
-        target_cls:  True object classes (nparray).
-        plot:  Plot precision-recall curve at mAP@0.5
-        save_dir:  Plot save directory
-    # Returns
-        The average precision as computed in py-faster-rcnn.
-    """
-
     # Sort by objectness
     i = np.argsort(-conf)
     tp, conf, pred_cls = tp[i], conf[i], pred_cls[i]
@@ -77,16 +63,14 @@ def ap_per_class(tp, conf, pred_cls, target_cls, plot=False, save_dir='.', names
     i = f1.mean(0).argmax()  # max F1 index
     return p[:, i], r[:, i], ap, f1[:, i], unique_classes.astype('int32')
 
+def smooth(y, f=0.05):
+    # Box filter of fraction f
+    nf = round(len(y) * f * 2) // 2 + 1  # number of filter elements (must be odd)
+    p = np.ones(nf // 2)  # ones padding
+    yp = np.concatenate((p * y[0], y, p * y[-1]), 0)  # y padded
+    return np.convolve(yp, np.ones(nf) / nf, mode='valid')  # y-smoothed
 
 def compute_ap(recall, precision):
-    """ Compute the average precision, given the recall and precision curves
-    # Arguments
-        recall:    The recall curve (list)
-        precision: The precision curve (list)
-    # Returns
-        Average precision, precision curve, recall curve
-    """
-
     # Append sentinel values to beginning and end
     mrec = np.concatenate(([0.], recall, [recall[-1] + 0.01]))
     mpre = np.concatenate(([1.], precision, [0.]))
@@ -105,6 +89,42 @@ def compute_ap(recall, precision):
 
     return ap, mpre, mrec
 
+def bbox_iou(box1, box2, xywh=True, GIoU=False, DIoU=False, CIoU=False, eps=1e-7):
+    if xywh:  # transform from xywh to xyxy
+        (x1, y1, w1, h1), (x2, y2, w2, h2) = box1.chunk(4, 1), box2.chunk(4, 1)
+        w1_, h1_, w2_, h2_ = w1 / 2, h1 / 2, w2 / 2, h2 / 2
+        b1_x1, b1_x2, b1_y1, b1_y2 = x1 - w1_, x1 + w1_, y1 - h1_, y1 + h1_
+        b2_x1, b2_x2, b2_y1, b2_y2 = x2 - w2_, x2 + w2_, y2 - h2_, y2 + h2_
+    else:  # x1, y1, x2, y2 = box1
+        b1_x1, b1_y1, b1_x2, b1_y2 = box1.chunk(4, 1)
+        b2_x1, b2_y1, b2_x2, b2_y2 = box2.chunk(4, 1)
+        w1, h1 = b1_x2 - b1_x1, b1_y2 - b1_y1
+        w2, h2 = b2_x2 - b2_x1, b2_y2 - b2_y1
+
+    # Intersection area
+    inter = (torch.min(b1_x2, b2_x2) - torch.max(b1_x1, b2_x1)).clamp(0) * \
+            (torch.min(b1_y2, b2_y2) - torch.max(b1_y1, b2_y1)).clamp(0)
+
+    # Union Area
+    union = w1 * h1 + w2 * h2 - inter + eps
+
+    # IoU
+    iou = inter / union
+    if CIoU or DIoU or GIoU:
+        cw = torch.max(b1_x2, b2_x2) - torch.min(b1_x1, b2_x1)
+        ch = torch.max(b1_y2, b2_y2) - torch.min(b1_y1, b2_y1)
+        if CIoU or DIoU:
+            c2 = cw ** 2 + ch ** 2 + eps
+            rho2 = ((b2_x1 + b2_x2 - b1_x1 - b1_x2) ** 2 + (b2_y1 + b2_y2 - b1_y1 - b1_y2) ** 2) / 4  # center dist ** 2
+            if CIoU:
+                v = (4 / math.pi ** 2) * torch.pow(torch.atan(w2 / (h2 + eps)) - torch.atan(w1 / (h1 + eps)), 2)
+                with torch.no_grad():
+                    alpha = v / (v - iou + (1 + eps))
+                return iou - (rho2 / c2 + v * alpha)  # CIoU
+            return iou - rho2 / c2  # DIoU
+        c_area = cw * ch + eps  # convex area
+        return iou - (c_area - union) / c_area
+    return iou  # IoU
 
 class ConfusionMatrix:
     # Updated version of https://github.com/kaanakan/object_detection_confusion_matrix
@@ -115,15 +135,6 @@ class ConfusionMatrix:
         self.iou_thres = iou_thres
 
     def process_batch(self, detections, labels):
-        """
-        Return intersection-over-union (Jaccard index) of boxes.
-        Both sets of boxes are expected to be in (x1, y1, x2, y2) format.
-        Arguments:
-            detections (Array[N, 6]), x1, y1, x2, y2, conf, class
-            labels (Array[M, 5]), class, x1, y1, x2, y2
-        Returns:
-            None, updates confusion matrix accordingly
-        """
         detections = detections[detections[:, 4] > self.conf]
         gt_classes = labels[:, 0].int()
         detection_classes = detections[:, 5].int()
@@ -180,8 +191,6 @@ class ConfusionMatrix:
         for i in range(self.nc + 1):
             print(' '.join(map(str, self.matrix[i])))
 
-
-# Plots ----------------------------------------------------------------------------------------------------------------
 
 def plot_pr_curve(px, py, ap, save_dir='pr_curve.png', names=()):
     # Precision-recall curve
